@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>田区空间校正台</title>
+<style>
+  :root { --bd:#d8dde3; --bg:#f4f6f8; --blue:#2266cc; --red:#d11; --amber:#b8860b; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:#1d2430; }
+  header { background:#16324f; color:#fff; padding:12px 20px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  header h1 { font-size:20px; margin:0; }
+  header .meta { font-size:12px; opacity:.8; }
+  .layout { display:grid; grid-template-columns: 330px 1fr; gap:14px; padding:14px; align-items:start; }
+  .card { background:#fff; border:1px solid var(--bd); border-radius:10px; padding:14px; margin-bottom:14px; }
+  .card h2 { font-size:15px; margin:0 0 10px; }
+  button { cursor:pointer; border:1px solid #2266cc; background:#2266cc; color:#fff; border-radius:6px; padding:6px 10px; font-size:13px; }
+  button.secondary { background:#fff; color:#2266cc; }
+  button.danger { border-color:#a33; background:#a33; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  select,input { padding:6px 8px; border:1px solid var(--bd); border-radius:6px; font-size:13px; width:100%; }
+  label { font-size:12px; color:#445; display:block; margin:8px 0 3px; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .row > * { flex:1; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; }
+  .ok { background:#e3f4e3; color:#1a6b1a; }
+  .bad { background:#fde3e3; color:var(--red); }
+  .warn { background:#fdf3d6; color:var(--amber); }
+  .muted { color:#778; font-size:12px; }
+  .issue { border-left:3px solid var(--red); padding:6px 8px; background:#fdf2f2; margin:6px 0; font-size:12px; }
+  .issue.warnb { border-color:var(--amber); background:#fdf9ec; }
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  th,td { border:1px solid #e6e9ee; padding:4px 6px; text-align:left; }
+  th { background:#f0f3f7; position:sticky; top:0; }
+  .gridwrap { overflow:auto; background:#fff; border:1px solid var(--bd); border-radius:10px; padding:8px; }
+  .tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
+  .tabs button { background:#eef2f7; color:#334; border-color:var(--bd); }
+  .tabs button.active { background:#2266cc; color:#fff; border-color:#2266cc; }
+  .branch-item { border:1px solid var(--bd); border-radius:8px; padding:8px; margin:6px 0; font-size:12px; cursor:pointer; }
+  .branch-item.active { border-color:var(--blue); background:#f0f6ff; }
+  .small { font-size:11px; }
+  pre { white-space:pre-wrap; word-break:break-all; background:#f6f8fa; padding:8px; border-radius:6px; font-size:11px; max-height:180px; overflow:auto; }
+  .scrolly { max-height:240px; overflow:auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>田区空间校正台</h1>
+  <span class="meta">空间校正候选：行列趋势 / 区组随机效应 / 局部相关（无环绕邻居，缺区不作零）</span>
+  <span style="flex:1"></span>
+  <button class="secondary" onclick="reimport()">重新导入固定 fixture</button>
+  <button class="secondary" onclick="resetDB()">清空并复核</button>
+  <a href="/api/export/runs.csv" target="_blank"><button class="secondary" type="button">导出运行记录</button></a>
+</header>
+<div class="layout">
+  <div>
+    <div class="card">
+      <h2>设计审查</h2>
+      <div id="designSummary" class="muted">加载中…</div>
+      <div id="issues"></div>
+    </div>
+    <div class="card">
+      <h2>修正与排除</h2>
+      <label>地块编号</label>
+      <input id="plotId" placeholder="如 P299"/>
+      <div class="row">
+        <div><label>新行号</label><input id="newRow" type="number" min="1"/></div>
+        <div><label>新列号</label><input id="newCol" type="number" min="1"/></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button onclick="fixCoordinates()">修正坐标</button>
+        <button class="secondary" onclick="toggleExclude(true)">排除该地块</button>
+        <button class="secondary" onclick="toggleExclude(false)">恢复</button>
+      </div>
+      <div id="revisions" class="small scrolly" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <h2>新分析分支</h2>
+      <label>分支名称（可空）</label>
+      <input id="branchName" placeholder="如 行列-去边缘"/>
+      <label>校正模型</label>
+      <select id="modelSel">
+        <option value="rowcol">行列趋势（行/列固定效应）</option>
+        <option value="block">区组随机效应（收缩）</option>
+        <option value="local">局部相关（正交邻居 Papadakis）</option>
+      </select>
+      <label>性状</label>
+      <select id="traitSel"><option value="yield">产量</option><option value="height">株高</option></select>
+      <label class="row" style="margin:6px 0"><input type="checkbox" id="excludeEdge" style="width:auto"/> 排除边界地块</label>
+      <button style="width:100%" onclick="publishBranch()">发布 / 重放分支</button>
+      <p class="muted" id="publishHint">重复单元未修正前，发布会被阻止并留痕。</p>
+    </div>
+    <div class="card">
+      <h2>分支列表</h2>
+      <div id="branchList" class="scrolly"></div>
+    </div>
+  </div>
+  <div>
+    <div class="card">
+      <h2>田区网格</h2>
+      <div class="tabs" id="layerTabs"></div>
+      <div class="gridwrap"><img id="grid" alt="田区网格"/></div>
+    </div>
+    <div class="card">
+      <h2>处理对比与数据覆盖</h2>
+      <div id="contrasts"></div>
+    </div>
+    <div class="card">
+      <h2>分支地块明细 / 导出 / 重放</h2>
+      <div class="row">
+        <a id="branchCsv"><button class="secondary" type="button">导出该分支 CSV</button></a>
+        <button class="secondary" onclick="replayBranch()">重放并核对</button>
+      </div>
+      <div id="replayOut" class="muted" style="margin-top:6px"></div>
+      <div class="scrolly" style="margin-top:8px"><table id="plotTable"></table></div>
+    </div>
+    <div class="card">
+      <h2>运行记录</h2>
+      <div id="audit" class="scrolly small"></div>
+    </div>
+  </div>
+</div>
+<script>
+const LAYERS = [
+  ["line","品系分布"],["raw","原始性状"],["residual","残差"],["adjusted","空间校正值"]
+];
+let state = null, layer = "line", currentBranchId = null;
+
+async function api(path, opts) {
+  const res = await fetch(path, opts || {});
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+  return data;
+}
+function esc(s){ return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+async function refresh() {
+  state = await api("/api/state");
+  renderDesign(); renderIssues(); renderRevisions();
+  renderBranches(); renderAudit(); renderGrid(); renderContrasts(); renderPlotTable();
+}
+
+function renderDesign() {
+  const d = state.design;
+  const ok = d.ok ? '<span class="pill ok">通过</span>' : '<span class="pill bad">阻止分析</span>';
+  document.getElementById("designSummary").innerHTML =
+    `${ok} 网格 ${d.row_count} 行 × ${d.col_count} 列；记录 ${d.plot_count} 条，可用 ${d.usable_count}；` +
+    `边缘 ${d.edge_count}，排除 ${d.excluded_count}；缺产量 ${d.missing_count.yield||0}，缺株高 ${d.missing_count.height||0}。`;
+  const blocked = !d.ok;
+  document.getElementById("publishHint").textContent = blocked
+    ? "存在重复/冲突单元：发布将被阻止并记录，需先修正坐标。"
+    : "设计检查通过：可以发布新的可重放分析分支。";
+}
+
+function renderIssues() {
+  const d = state.design, box = document.getElementById("issues");
+  let html = "";
+  for (const c of d.conflicts) {
+    const label = {duplicate_coordinate:"重复坐标",duplicate_plot_id:"重复试验单元",unit_two_lines:"同一单元两个品系"}[c.kind] || c.kind;
+    html += `<div class="issue"><b>${label}</b>：${esc(c.key)} → ${c.plots.map(esc).join("、")}（拒绝按最后导入覆盖）</div>`;
+  }
+  for (const t of d.single_block_treatments) {
+    html += `<div class="issue warnb"><b>单区组处理</b>：${esc(t.treatment)} 仅在 ${esc(t.block)}；涉及对比判为不可估，不用平滑伪造重复。</div>`;
+  }
+  if (!html) html = '<div class="muted">无重复单元；单区组处理会在对比表中标注不可估。</div>';
+  box.innerHTML = html;
+}
+
+function renderRevisions() {
+  const el = document.getElementById("revisions");
+  if (!state.revisions.length) { el.innerHTML = '<span class="muted">尚无坐标修正。</span>'; return; }
+  el.innerHTML = state.revisions.map(r =>
+    `<div>✏️ ${esc(r.plot_id)} (${r.old_row},${r.old_col}) → (${r.new_row},${r.new_col}) <span class="muted">${esc(r.changed_at)}</span></div>`
+  ).join("");
+}
+
+function renderBranches() {
+  const el = document.getElementById("branchList");
+  if (!state.branches.length) { el.innerHTML = '<span class="muted">尚未发布分支。</span>'; return; }
+  el.innerHTML = state.branches.map(b => {
+    const st = b.status === "published"
+      ? '<span class="pill ok">已发布</span>'
+      : '<span class="pill bad">已阻止</span>';
+    return `<div class="branch-item ${b.id===currentBranchId?'active':''}" onclick="selectBranch(${b.id})">
+      #${b.id} ${st} <b>${esc(b.name)}</b><br/>
+      <span class="muted">${modelName(b.model)} · ${traitName(b.trait)} · 排除边缘=${b.exclude_edge} · ${esc(b.created_at)}</span>
+      ${b.reason ? `<div class="muted">${esc(b.reason)}</div>`:""}
+    </div>`;
+  }).join("");
+}
+
+function modelName(m){ return {rowcol:"行列趋势",block:"区组随机效应",local:"局部相关"}[m]||m; }
+function traitName(t){ return t==="height"?"株高":"产量"; }
+
+async function selectBranch(id) {
+  currentBranchId = id;
+  const b = await api("/api/branches/"+id);
+  if (b.status !== "published") currentBranchId = null;
+  renderBranches(); renderGrid(); renderContrasts(); renderPlotTable();
+  document.getElementById("branchCsv").href = "/api/export/branches/"+id+".csv";
+}
+
+function renderGrid() {
+  const b = state.branches.find(x => x.id === currentBranchId);
+  const trait = b ? b.trait : document.getElementById("traitSel").value;
+  const base = b ? `/api/branches/${b.id}/grid.svg` : "/api/grid.svg";
+  document.getElementById("grid").src = `${base}?layer=${layer}&trait=${trait}&t=${Date.now()}`;
+  const tabs = document.getElementById("layerTabs");
+  tabs.innerHTML = LAYERS.map(([k,n]) =>
+    `<button class="${k===layer?'active':''}" onclick="setLayer('${k}')">${n}</button>`).join("");
+}
+function setLayer(k){ layer = k; renderGrid(); }
+
+function renderContrasts() {
+  const el = document.getElementById("contrasts");
+  const b = state.branches.find(x => x.id === currentBranchId);
+  if (!b || b.status !== "published") {
+    const d = state.design;
+    let rows = (d.estimable_pairs||[]).map(p =>
+      `<tr><td>${esc(p[0])} − ${esc(p[1])}</td><td><span class="pill ok">设计上可估</span></td><td>—</td><td>—</td><td>发布分支后显示</td></tr>`);
+    rows = rows.concat((d.non_estimable_pairs||[]).map(p =>
+      `<tr><td>${esc(p[0])} − ${esc(p[1])}</td><td><span class="pill bad">不可估</span></td><td>—</td><td>—</td><td>仅在单一区组，不使用平滑伪造重复</td></tr>`));
+    el.innerHTML = `<table><thead><tr><th>对比</th><th>可估性</th><th>原始差</th><th>校正差</th><th>使用区组/说明</th></tr></thead><tbody>${rows.join("")||""}</tbody></table>`;
+    return;
+  }
+  const rows = b.result.contrasts.map(c => {
+    const tag = c.estimable ? '<span class="pill ok">可估</span>' : '<span class="pill bad">不可估</span>';
+    const raw = c.estimable || true ? c.raw_diff.toFixed(3) : "";
+    const adj = c.estimable ? c.adjusted_diff.toFixed(3) : "—";
+    return `<tr>
+      <td>${esc(c.pair[0])} − ${esc(c.pair[1])}</td>
+      <td>${tag}</td>
+      <td>${raw}</td><td>${adj}</td>
+      <td>${esc(c.blocks_a.join(","))} / ${esc(c.blocks_b.join(","))}；n=${c.n_adjusted_a}/${c.n_adjusted_b}<br/><span class="muted">${esc(c.reason)}；校正前后变化 ${c.correction_delta.toFixed(3)}${c.estimable?"；SE "+c.standard_error.toFixed(3):""}</span></td>
+    </tr>`;
+  });
+  el.innerHTML = `<table><thead><tr><th>对比</th><th>可估性</th><th>原始差</th><th>校正差</th><th>使用区组/说明</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
+}
+
+function renderPlotTable() {
+  const el = document.getElementById("plotTable");
+  const b = state.branches.find(x => x.id === currentBranchId);
+  if (!b || b.status !== "published") { el.innerHTML = ""; return; }
+  const head = "<tr><th>地块</th><th>区组</th><th>行列</th><th>品系</th><th>处理</th><th>原始</th><th>拟合</th><th>残差</th><th>校正值</th></tr>";
+  const rows = b.result.plots.map(p => `<tr>
+    <td>${esc(p.plot_id)}</td><td>${esc(p.block)}</td><td>${p.row},${p.col}</td>
+    <td>${esc(p.line)}</td><td>${esc(p.treatment)}</td>
+    <td>${p.raw_na?'<span class="warn">缺区</span>':p.raw.toFixed(2)}</td>
+    <td>${p.raw_na||p.excluded?"—":p.fitted.toFixed(2)}</td>
+    <td>${p.raw_na||p.excluded?"—":p.residual.toFixed(2)}</td>
+    <td>${p.raw_na||p.excluded?"—":p.adjusted.toFixed(2)}</td>
+  </tr>`).join("");
+  el.innerHTML = `<thead>${head}</thead><tbody>${rows}</tbody>`;
+}
+
+function renderAudit() {
+  const el = document.getElementById("audit");
+  el.innerHTML = state.audit.map(a =>
+    `<div>[${esc(a.at)}] <b>${esc(a.action)}</b> ${esc(a.detail)}</div>`).join("") ||
+    '<span class="muted">无记录。</span>';
+}
+
+async function fixCoordinates() {
+  const id = document.getElementById("plotId").value.trim();
+  const row = parseInt(document.getElementById("newRow").value, 10);
+  const col = parseInt(document.getElementById("newCol").value, 10);
+  if (!id || !row || !col) { alert("请填写地块编号和新行列号"); return; }
+  try {
+    await api(`/api/plots/${encodeURIComponent(id)}/coordinates`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({row, col})
+    });
+    currentBranchId = null;
+    await refresh();
+  } catch (e) { alert(e.message); }
+}
+async function toggleExclude(ex) {
+  const id = document.getElementById("plotId").value.trim();
+  if (!id) { alert("请先填写地块编号"); return; }
+  try {
+    await api(`/api/plots/${encodeURIComponent(id)}/exclude`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({excluded: ex})
+    });
+    await refresh();
+  } catch (e) { alert(e.message); }
+}
+async function publishBranch() {
+  const body = {
+    name: document.getElementById("branchName").value.trim(),
+    model: document.getElementById("modelSel").value,
+    trait: document.getElementById("traitSel").value,
+    exclude_edge: document.getElementById("excludeEdge").checked
+  };
+  try {
+    const b = await api("/api/branches", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(body)
+    });
+    if (b.status === "published") currentBranchId = b.id;
+    else alert("分支被阻止：" + b.reason);
+    await refresh();
+  } catch (e) { alert(e.message); }
+}
+async function replayBranch() {
+  if (!currentBranchId) { alert("请先选择一个已发布分支"); return; }
+  const r = await api(`/api/branches/${currentBranchId}/replay`, {method:"POST"});
+  document.getElementById("replayOut").textContent =
+    (r.match ? "重放结果与发布时完全一致 ✅" : "重放结果不一致 ❌");
+}
+async function reimport() {
+  await api("/api/reimport", {method:"POST"});
+  currentBranchId = null;
+  await refresh();
+}
+async function resetDB() {
+  if (!confirm("清空数据库并用固定 fixture 重新导入？")) return;
+  await api("/api/reset", {method:"POST"});
+  currentBranchId = null;
+  await refresh();
+}
+document.getElementById("traitSel").addEventListener("change", () => { if (!currentBranchId) renderGrid(); });
+refresh();
+</script>
+</body>
+</html>
